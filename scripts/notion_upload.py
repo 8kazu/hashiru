@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""HTMLレポートをNotionページにアップロードする。
+"""HTMLレポートをNotionに新規ページとしてアップロードする。
 
 usage: python3 scripts/notion_upload.py <report.html> [summary.md]
 
 .env（リポジトリルート）に以下を設定:
   NOTION_TOKEN=ntn_xxx        # Notion内部インテグレーションのトークン
-  NOTION_PAGE_ID=xxxx         # 追記先ページのID（ページURLをそのまま貼ってもOK）
+  NOTION_PAGE_ID=xxxx         # 親ページのID（ページURLをそのまま貼ってもOK）
 
 動作:
-  1. summary.md をNotionブロック（見出し・箇条書き）に変換してページ本文に追記
+  1. 親ページの子として新規ページを作成（タイトル: "2026-07-11 朝版" など）
   2. HTMLファイルをNotion File Upload APIでアップロードし、fileブロックとして添付
+  3. summary.md をNotionブロック（見出し・箇条書き）に変換してページ本文に追加
 標準ライブラリのみ使用（requests不要）。
 """
 import json
@@ -75,8 +76,8 @@ def api_request(method: str, path: str, token: str, payload=None, raw_body=None,
         sys.exit(f"Notion APIエラー {e.code} ({method} {path}):\n{body}")
 
 
-def upload_file(html_path: Path, token: str) -> str:
-    """File Upload APIでHTMLをアップロードし、file_upload IDを返す。"""
+def upload_file(html_path: Path, token: str) -> tuple[str, str]:
+    """File Upload APIでHTMLをアップロードし、(upload_id, url) を返す。"""
     created = api_request("POST", "/file_uploads", token, payload={
         "filename": html_path.name,
         "content_type": "text/html",
@@ -93,11 +94,12 @@ def upload_file(html_path: Path, token: str) -> str:
         f"Content-Type: text/html\r\n\r\n"
     ).encode("utf-8") + content + f"\r\n--{boundary}--\r\n".encode("utf-8")
 
-    api_request(
+    result = api_request(
         "POST", f"/file_uploads/{upload_id}/send", token,
         raw_body=body, content_type=f"multipart/form-data; boundary={boundary}",
     )
-    return upload_id
+    url = result.get("url", "")
+    return upload_id, url
 
 
 def rich_text(text: str) -> list:
@@ -159,22 +161,28 @@ def main():
         label = f"{m.group(1)} {edition_ja.get(m.group(2), m.group(2))}"
 
     # 1. ファイルアップロード
-    upload_id = upload_file(html_path, token)
+    upload_id, url = upload_file(html_path, token)
 
-    # 2. ブロック組み立て: 見出し → 添付 → 本文要約 → 区切り線
-    children = [
-        {"object": "block", "type": "heading_1",
-         "heading_1": {"rich_text": rich_text(f"📰 {label}")}},
-        {"object": "block", "type": "file",
-         "file": {"type": "file_upload", "file_upload": {"id": upload_id},
-                  "name": html_path.name}},
-    ]
+    # 2. ブロック組み立て: embed（URLがあればインライン表示、なければファイル添付）→ 本文要約
+    if url:
+        html_block = {"object": "block", "type": "embed", "embed": {"url": url}}
+    else:
+        html_block = {"object": "block", "type": "file",
+                      "file": {"type": "file_upload", "file_upload": {"id": upload_id},
+                               "name": html_path.name}}
+    children = [html_block]
     if summary_path and summary_path.exists():
         children += markdown_to_blocks(summary_path.read_text(encoding="utf-8"))
-    children.append({"object": "block", "type": "divider", "divider": {}})
 
-    api_request("PATCH", f"/blocks/{page_id}/children", token, payload={"children": children})
-    print(f"OK: {html_path.name} をNotionページに追記しました")
+    # 3. 親ページの子として新規ページを作成
+    api_request("POST", "/pages", token, payload={
+        "parent": {"page_id": page_id},
+        "properties": {
+            "title": {"title": [{"type": "text", "text": {"content": f"📰 {label}"}}]},
+        },
+        "children": children,
+    })
+    print(f"OK: {html_path.name} をNotionに新規ページとして作成しました")
 
 
 if __name__ == "__main__":
