@@ -1,0 +1,13 @@
+# 環境変数
+.env
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# レポート出力
+reports/

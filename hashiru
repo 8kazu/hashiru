@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# hashiru — デイリーニュースレポート生成CLI
+# usage: hashiru morning | hashiru evening
+set -euo pipefail
+
+# cron実行対策: cronはPATHが最小限のため、claude/python3の一般的な場所を追加
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT"
+
+EDITION="${1:-}"
+if [[ "$EDITION" != "morning" && "$EDITION" != "evening" ]]; then
+  echo "usage: hashiru {morning|evening}"
+  exit 1
+fi
+
+if ! command -v claude >/dev/null 2>&1; then
+  echo "!! claude コマンドが見つかりません（PATH: $PATH）" >&2
+  exit 1
+fi
+
+DATE="$(date +%F)"
+OUT="reports/${DATE}_${EDITION}.html"
+SUMMARY="reports/${DATE}_${EDITION}.summary.md"
+mkdir -p reports
+
+echo "==> レポート生成中 (${EDITION}) ... 数分かかります"
+
+PROMPT="$(sed -e "s|__OUT__|${OUT}|g" -e "s|__SUMMARY__|${SUMMARY}|g" -e "s|__DATE__|${DATE}|g" "prompts/${EDITION}.md")"
+
+claude -p "$PROMPT" \
+  --allowedTools "WebSearch,WebFetch,Read,Write,Glob" \
+  --add-dir "$ROOT"
+
+if [[ ! -f "$OUT" ]]; then
+  echo "!! レポートが生成されませんでした: $OUT" >&2
+  exit 1
+fi
+echo "==> 生成完了: $ROOT/$OUT"
+
+# Notionアップロード（.env が設定されている場合のみ）
+if [[ -f ".env" ]]; then
+  echo "==> Notionへアップロード中 ..."
+  python3 scripts/notion_upload.py "$OUT" "$SUMMARY" && echo "==> Notionアップロード完了" \
+    || echo "!! Notionアップロードに失敗しました（レポート自体は生成済み）" >&2
+else
+  echo "==> .env が無いためNotionアップロードはスキップ（README参照）"
+fi
+
+# ブラウザで開く（launchd/cron実行時は HASHIRU_NO_OPEN=1 でスキップ）
+if [[ "${HASHIRU_NO_OPEN:-0}" != "1" ]]; then
+  open "$OUT" 2>/dev/null || true
+fi
