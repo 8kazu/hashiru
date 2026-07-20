@@ -1,3 +1,3 @@
 {
-  "stocks": []
+  "stocks": [{ "ticker": "SPCX", "name": "SpaceX", "market": "US", "added": "2026-06-12", "note": "保有", "holdings": [{ "price_usd": 135, "shares": 3 }] } ]
 }
